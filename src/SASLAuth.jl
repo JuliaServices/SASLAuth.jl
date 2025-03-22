@@ -1,4 +1,4 @@
-module Example
+module SASLAuth
 export hello, domath
 
 """

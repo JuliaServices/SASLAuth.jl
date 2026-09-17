@@ -134,3 +134,34 @@ end
     _, _, ok = SASLAuth.step!(server, msg)
     @test ok
 end
+
+@testset "GSSAPI" begin
+    G = SASLAuth.GSSAPI
+    if G.available()
+        @test G.has_credentials() isa Bool
+        ctx = G.Context("postgres@localhost"; encrypt=true)
+        # a CI runner holds no Kerberos ticket: the library must report a
+        # decoded error, not crash or hang. A developer machine with a ticket
+        # produces a first token instead.
+        result = try
+            G.step!(ctx, nothing)
+        catch err
+            err
+        end
+        if result isa G.GSSError
+            @test !isempty(result.msg)
+            @test occursin("could not initiate GSSAPI security context", result.msg)
+        else
+            token, done = result
+            @test token isa Vector{UInt8} && !isempty(token)
+            @test !done
+        end
+        close(ctx)
+        # closed twice is harmless; wrapping without a context is an error
+        close(ctx)
+        @test_throws G.GSSError G.wrap(ctx, UInt8[1, 2, 3])
+    else
+        @test_throws G.GSSError G.Context("postgres@localhost")
+        @test !G.has_credentials()
+    end
+end

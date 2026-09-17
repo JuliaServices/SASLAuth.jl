@@ -17,6 +17,8 @@ Supported mechanisms:
 - ✅ `PLAIN` — simple username/password (must be used over TLS)
 - ✅ `EXTERNAL` — identity established by external means (e.g. TLS client cert)
 
+Also included: `SASLAuth.GSSAPI`, thin bindings to the operating system's GSSAPI/Kerberos library (MIT `libgssapi_krb5` on Linux, the `GSS.framework` on macOS, MIT Kerberos for Windows) for protocols that carry raw GSS tokens, such as PostgreSQL's GSSAPI authentication and encryption. No Kerberos is bundled; the system `krb5.conf`, ticket cache, and keytabs are used.
+
 ---
 
 ## 📦 Installation
@@ -100,6 +102,25 @@ msg, _ = step!(client, nothing)
 server = EXTERNALServer(authzid -> authzid == "alice")
 _, _, ok = step!(server, msg)
 ```
+
+---
+
+## 🎫 GSSAPI (Kerberos)
+
+```julia
+G = SASLAuth.GSSAPI
+G.available()                # a GSSAPI library could be loaded
+G.has_credentials()          # a ticket is available (kinit)
+ctx = G.Context("postgres@db.example.com"; delegate=false, encrypt=true)
+token, done = G.step!(ctx, nothing)         # first token to send
+token, done = G.step!(ctx, server_token)    # repeat until done
+sealed = G.wrap(ctx, plaintext)             # confidentiality required
+plaintext = G.unwrap(ctx, sealed)
+G.wrap_size_limit(ctx, 16380)               # largest plaintext per packet
+close(ctx)
+```
+
+Failures throw `SASLAuth.GSSAPI.GSSError` with both decoded status strings.
 
 ---
 

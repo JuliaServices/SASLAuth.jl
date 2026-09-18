@@ -29,7 +29,7 @@ end
 # gss_OID_desc is {OM_uint32 length; void *elements}. Apple's GSS framework
 # headers wrap it in `#pragma pack(2)` on Intel, so there the pointer sits at
 # offset 4 instead of 8; the descriptor is built as raw bytes to match.
-const OID_ELEMENTS_OFFSET = Sys.isapple() && Sys.ARCH === :x86_64 ? 4 : 8
+const OID_ELEMENTS_OFFSET = Sys.isapple() && Sys.ARCH === :x86_64 ? 4 : sizeof(Ptr{Cvoid})
 function oid_desc(elements::Vector{UInt8})
     desc = zeros(UInt8, OID_ELEMENTS_OFFSET + sizeof(Ptr{Cvoid}))
     desc[1:4] = reinterpret(UInt8, [OM_uint32(length(elements))])
@@ -76,7 +76,6 @@ const _lib = Ref{Ptr{Cvoid}}(C_NULL)
 const _lib_lock = ReentrantLock()
 
 function library()
-    _lib[] != C_NULL && return _lib[]
     @lock _lib_lock begin
         _lib[] != C_NULL && return _lib[]
         for name in LIBRARY_CANDIDATES
@@ -98,9 +97,19 @@ available() = (try; library(); true; catch; false; end)
 
 sym(name::Symbol) = dlsym(library(), name)
 
+# MIT Kerberos uses __stdcall on Windows; it differs from C on 32-bit x86.
+macro gsscall(args...)
+    convention = Sys.iswindows() && Sys.WORD_SIZE == 32 ? :stdcall : :cdecl
+    return esc(Expr(:call, :ccall, args[1], convention, args[2:end]...))
+end
+
+# Native buffers are contiguous; views and other abstract vectors need a copy.
+_bytes(data::Vector{UInt8}) = data
+_bytes(data::AbstractVector{UInt8}) = collect(data)
+
 function _release!(buf::Ref{Buffer})
     minor = Ref{OM_uint32}(0)
-    ccall(sym(:gss_release_buffer), OM_uint32, (Ref{OM_uint32}, Ref{Buffer}), minor, buf)
+    @gsscall(sym(:gss_release_buffer), OM_uint32, (Ref{OM_uint32}, Ref{Buffer}), minor, buf)
     return
 end
 
@@ -118,7 +127,7 @@ function _status(code::OM_uint32, kind::Cint)
     minor = Ref{OM_uint32}(0)
     while true
         buf = Ref(Buffer(0, C_NULL))
-        ccall(sym(:gss_display_status), OM_uint32,
+        @gsscall(sym(:gss_display_status), OM_uint32,
               (Ref{OM_uint32}, OM_uint32, Cint, Ptr{Cvoid}, Ref{OM_uint32}, Ref{Buffer}),
               minor, code, kind, C_NULL, msgctx, buf) == S_COMPLETE || break
         push!(msgs, strip(String(_take!(buf))))
@@ -142,11 +151,11 @@ function has_credentials()
     available() || return false
     minor = Ref{OM_uint32}(0)
     cred = Ref{Ptr{Cvoid}}(C_NULL)
-    major = ccall(sym(:gss_acquire_cred), OM_uint32,
+    major = @gsscall(sym(:gss_acquire_cred), OM_uint32,
                   (Ref{OM_uint32}, Ptr{Cvoid}, OM_uint32, Ptr{Cvoid}, Cint, Ref{Ptr{Cvoid}}, Ptr{Cvoid}, Ptr{Cvoid}),
                   minor, C_NULL, 0, C_NULL, C_INITIATE, cred, C_NULL, C_NULL)
     major == S_COMPLETE || return false
-    ccall(sym(:gss_release_cred), OM_uint32, (Ref{OM_uint32}, Ref{Ptr{Cvoid}}), minor, cred)
+    @gsscall(sym(:gss_release_cred), OM_uint32, (Ref{OM_uint32}, Ref{Ptr{Cvoid}}), minor, cred)
     return true
 end
 
@@ -179,7 +188,7 @@ function Context(target::AbstractString; delegate::Bool=false, encrypt::Bool=fal
     minor = Ref{OM_uint32}(0)
     tgt = String(target)
     nametype = oid_desc(NT_HOSTBASED_SERVICE)
-    major = GC.@preserve tgt nametype ccall(sym(:gss_import_name), OM_uint32,
+    major = GC.@preserve tgt nametype @gsscall(sym(:gss_import_name), OM_uint32,
                                             (Ref{OM_uint32}, Ref{Buffer}, Ptr{Cvoid}, Ref{Ptr{Cvoid}}),
                                             minor, Ref(Buffer(sizeof(tgt), pointer(tgt))), pointer(nametype), name)
     major == S_COMPLETE || throw(gsserror("GSSAPI name import error", major, minor[]))
@@ -196,12 +205,13 @@ stop when `done`.
 """
 function step!(ctx::Context, token::Union{Nothing, AbstractVector{UInt8}})
     ctx.established && throw(GSSError("GSSAPI security context is already established"))
-    input = token === nothing ? UInt8[] : token
+    ctx.target == C_NULL && throw(GSSError("GSSAPI security context is closed"))
+    input = token === nothing ? UInt8[] : _bytes(token)
     minor = Ref{OM_uint32}(0)
     out = Ref(Buffer(0, C_NULL))
     handle = Ref(ctx.handle)
     # an empty input buffer on the first call, as libpq's pqsecure_open_gss does
-    major = GC.@preserve input ccall(sym(:gss_init_sec_context), OM_uint32,
+    major = GC.@preserve ctx input @gsscall(sym(:gss_init_sec_context), OM_uint32,
                   (Ref{OM_uint32}, Ptr{Cvoid}, Ref{Ptr{Cvoid}}, Ptr{Cvoid}, Ptr{Cvoid}, OM_uint32, OM_uint32,
                    Ptr{Cvoid}, Ref{Buffer}, Ptr{Cvoid}, Ref{Buffer}, Ptr{OM_uint32}, Ptr{OM_uint32}),
                   minor, C_NULL, handle, ctx.target, C_NULL, ctx.flags, 0,
@@ -221,14 +231,15 @@ Seal `data` with confidentiality (`gss_wrap`). Throws when the mechanism
 would send it without confidentiality.
 """
 function wrap(ctx::Context, data::AbstractVector{UInt8})
+    data = _bytes(data)
     minor = Ref{OM_uint32}(0)
     conf = Ref{Cint}(0)
     out = Ref(Buffer(0, C_NULL))
-    major = GC.@preserve data ccall(sym(:gss_wrap), OM_uint32,
+    major = GC.@preserve ctx data @gsscall(sym(:gss_wrap), OM_uint32,
                   (Ref{OM_uint32}, Ptr{Cvoid}, Cint, OM_uint32, Ref{Buffer}, Ref{Cint}, Ref{Buffer}),
                   minor, ctx.handle, 1, 0, Ref(Buffer(length(data), pointer(data))), conf, out)
-    major == S_COMPLETE || throw(gsserror("GSSAPI wrap error", major, minor[]))
     output = _take!(out)
+    major == S_COMPLETE || throw(gsserror("GSSAPI wrap error", major, minor[]))
     conf[] == 0 && throw(GSSError("outgoing GSSAPI message would not use confidentiality"))
     return output
 end
@@ -240,14 +251,15 @@ Unseal a `wrap` token (`gss_unwrap`). Throws when it was not sent with
 confidentiality.
 """
 function unwrap(ctx::Context, token::AbstractVector{UInt8})
+    token = _bytes(token)
     minor = Ref{OM_uint32}(0)
     conf = Ref{Cint}(0)
     out = Ref(Buffer(0, C_NULL))
-    major = GC.@preserve token ccall(sym(:gss_unwrap), OM_uint32,
+    major = GC.@preserve ctx token @gsscall(sym(:gss_unwrap), OM_uint32,
                   (Ref{OM_uint32}, Ptr{Cvoid}, Ref{Buffer}, Ref{Buffer}, Ref{Cint}, Ptr{OM_uint32}),
                   minor, ctx.handle, Ref(Buffer(length(token), pointer(token))), out, conf, C_NULL)
-    major == S_COMPLETE || throw(gsserror("GSSAPI unwrap error", major, minor[]))
     output = _take!(out)
+    major == S_COMPLETE || throw(gsserror("GSSAPI unwrap error", major, minor[]))
     conf[] == 0 && throw(GSSError("incoming GSSAPI message did not use confidentiality"))
     return output
 end
@@ -260,7 +272,7 @@ The largest plaintext whose `wrap` output fits in `max_output` bytes.
 function wrap_size_limit(ctx::Context, max_output::Integer)
     minor = Ref{OM_uint32}(0)
     max_input = Ref{OM_uint32}(0)
-    major = ccall(sym(:gss_wrap_size_limit), OM_uint32,
+    major = GC.@preserve ctx @gsscall(sym(:gss_wrap_size_limit), OM_uint32,
                   (Ref{OM_uint32}, Ptr{Cvoid}, Cint, OM_uint32, OM_uint32, Ref{OM_uint32}),
                   minor, ctx.handle, 1, 0, OM_uint32(max_output), max_input)
     major == S_COMPLETE || throw(gsserror("GSSAPI size check error", major, minor[]))
@@ -271,12 +283,12 @@ function Base.close(ctx::Context)
     minor = Ref{OM_uint32}(0)
     if ctx.handle != C_NULL
         handle = Ref(ctx.handle)
-        ccall(sym(:gss_delete_sec_context), OM_uint32, (Ref{OM_uint32}, Ref{Ptr{Cvoid}}, Ptr{Cvoid}), minor, handle, C_NULL)
+        @gsscall(sym(:gss_delete_sec_context), OM_uint32, (Ref{OM_uint32}, Ref{Ptr{Cvoid}}, Ptr{Cvoid}), minor, handle, C_NULL)
         ctx.handle = C_NULL
     end
     if ctx.target != C_NULL
         name = Ref(ctx.target)
-        ccall(sym(:gss_release_name), OM_uint32, (Ref{OM_uint32}, Ref{Ptr{Cvoid}}), minor, name)
+        @gsscall(sym(:gss_release_name), OM_uint32, (Ref{OM_uint32}, Ref{Ptr{Cvoid}}), minor, name)
         ctx.target = C_NULL
     end
     return nothing

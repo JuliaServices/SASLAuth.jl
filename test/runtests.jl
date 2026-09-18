@@ -165,3 +165,20 @@ end
         @test !G.has_credentials()
     end
 end
+
+@testset "GSSAPI descriptor layout" begin
+    G = SASLAuth.GSSAPI
+    # A naturally aligned C descriptor, except for Apple's Intel packing.
+    offset = Sys.isapple() && Sys.ARCH === :x86_64 ? 4 : sizeof(Ptr{Cvoid})
+    desc = G.oid_desc(G.NT_HOSTBASED_SERVICE)
+    @test length(desc) == offset + sizeof(Ptr{Cvoid})
+    @test reinterpret(UInt32, desc[1:4])[1] == length(G.NT_HOSTBASED_SERVICE)
+    @test reinterpret(UInt, desc[offset+1:end])[1] == UInt(pointer(G.NT_HOSTBASED_SERVICE))
+    ctx = G.Context(C_NULL, C_NULL, UInt32(0), false)
+    @test_throws G.GSSError G.step!(ctx, nothing)
+end
+
+# Julia's @cfunction cannot produce stdcall callbacks on 32-bit Windows.
+if !(Sys.iswindows() && Sys.WORD_SIZE == 32)
+    include("gssapi_buffers.jl")
+end

@@ -21,14 +21,20 @@ using Libdl
 
 const OM_uint32 = UInt32
 
-# gss_buffer_desc and gss_OID_desc
+# gss_buffer_desc
 struct Buffer
     length::Csize_t
     value::Ptr{UInt8}
 end
-struct OID
-    length::OM_uint32
-    elements::Ptr{UInt8}
+# gss_OID_desc is {OM_uint32 length; void *elements}. Apple's GSS framework
+# headers wrap it in `#pragma pack(2)` on Intel, so there the pointer sits at
+# offset 4 instead of 8; the descriptor is built as raw bytes to match.
+const OID_ELEMENTS_OFFSET = Sys.isapple() && Sys.ARCH === :x86_64 ? 4 : 8
+function oid_desc(elements::Vector{UInt8})
+    desc = zeros(UInt8, OID_ELEMENTS_OFFSET + sizeof(Ptr{Cvoid}))
+    desc[1:4] = reinterpret(UInt8, [OM_uint32(length(elements))])
+    desc[OID_ELEMENTS_OFFSET+1:end] = reinterpret(UInt8, [UInt(pointer(elements))])
+    return desc
 end
 
 # GSS_C_NT_HOSTBASED_SERVICE, 1.2.840.113554.1.2.1.4, as DER bytes: MIT and
@@ -172,10 +178,10 @@ function Context(target::AbstractString; delegate::Bool=false, encrypt::Bool=fal
     name = Ref{Ptr{Cvoid}}(C_NULL)
     minor = Ref{OM_uint32}(0)
     tgt = String(target)
-    major = GC.@preserve tgt ccall(sym(:gss_import_name), OM_uint32,
-                                   (Ref{OM_uint32}, Ref{Buffer}, Ref{OID}, Ref{Ptr{Cvoid}}),
-                                   minor, Ref(Buffer(sizeof(tgt), pointer(tgt))),
-                                   Ref(OID(length(NT_HOSTBASED_SERVICE), pointer(NT_HOSTBASED_SERVICE))), name)
+    nametype = oid_desc(NT_HOSTBASED_SERVICE)
+    major = GC.@preserve tgt nametype ccall(sym(:gss_import_name), OM_uint32,
+                                            (Ref{OM_uint32}, Ref{Buffer}, Ptr{Cvoid}, Ref{Ptr{Cvoid}}),
+                                            minor, Ref(Buffer(sizeof(tgt), pointer(tgt))), pointer(nametype), name)
     major == S_COMPLETE || throw(gsserror("GSSAPI name import error", major, minor[]))
     ctx = Context(C_NULL, name[], flags, false)
     return finalizer(close, ctx)

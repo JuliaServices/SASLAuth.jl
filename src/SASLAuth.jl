@@ -45,5 +45,6 @@ abstract type SASLServer end
 include("scramsha256.jl")
 include("plain.jl")
 include("external.jl")
+include("gssapi.jl")
 
 end

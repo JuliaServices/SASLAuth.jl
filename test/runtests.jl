@@ -134,3 +134,51 @@ end
     _, _, ok = SASLAuth.step!(server, msg)
     @test ok
 end
+
+@testset "GSSAPI" begin
+    G = SASLAuth.GSSAPI
+    if G.available()
+        @test G.has_credentials() isa Bool
+        ctx = G.Context("postgres@localhost"; encrypt=true)
+        # a CI runner holds no Kerberos ticket: the library must report a
+        # decoded error, not crash or hang. A developer machine with a ticket
+        # produces a first token instead.
+        result = try
+            G.step!(ctx, nothing)
+        catch err
+            err
+        end
+        if result isa G.GSSError
+            @test !isempty(result.msg)
+            @test occursin("could not initiate GSSAPI security context", result.msg)
+        else
+            token, done = result
+            @test token isa Vector{UInt8} && !isempty(token)
+            @test !done
+        end
+        close(ctx)
+        # closed twice is harmless; wrapping without a context is an error
+        close(ctx)
+        @test_throws G.GSSError G.wrap(ctx, UInt8[1, 2, 3])
+    else
+        @test_throws G.GSSError G.Context("postgres@localhost")
+        @test !G.has_credentials()
+    end
+end
+
+@testset "GSSAPI descriptor layout" begin
+    G = SASLAuth.GSSAPI
+    # A naturally aligned C descriptor, except for Apple's Intel packing.
+    offset = Sys.isapple() && Sys.ARCH === :x86_64 ? 4 : sizeof(Ptr{Cvoid})
+    desc = G.oid_desc(G.NT_HOSTBASED_SERVICE)
+    @test length(desc) == offset + sizeof(Ptr{Cvoid})
+    @test reinterpret(UInt32, desc[1:4])[1] == length(G.NT_HOSTBASED_SERVICE)
+    @test reinterpret(UInt, desc[offset+1:end])[1] == UInt(pointer(G.NT_HOSTBASED_SERVICE))
+    ctx = G.Context(C_NULL, C_NULL, UInt32(0), false)
+    @test_throws G.GSSError G.step!(ctx, nothing)
+end
+
+# Julia's @cfunction cannot produce stdcall callbacks on 32-bit Windows.
+if !(Sys.iswindows() && Sys.WORD_SIZE == 32)
+    include("gssapi_buffers.jl")
+end

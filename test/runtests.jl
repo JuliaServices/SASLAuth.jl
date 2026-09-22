@@ -61,7 +61,7 @@ end
     # Tampered proof
     client_msg1 = "n,,n=bob,r=badnonce"
     challenge, _, _ = SASLAuth.step!(server, client_msg1)
-    bad_client_final = "c=biws,r=badnoncexyz,p=ZmFrZXByb29m"  # base64("fakeproof")
+    bad_client_final = "c=biws,r=$(server.combined_nonce),p=ZmFrZXByb29m"  # base64("fakeproof")
     _, done, success = SASLAuth.step!(server, bad_client_final)
 
     @test done
@@ -182,3 +182,5 @@ end
 if !(Sys.iswindows() && Sys.WORD_SIZE == 32)
     include("gssapi_buffers.jl")
 end
+
+include("scram_nonces.jl")

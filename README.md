@@ -56,27 +56,25 @@ With the shared interface:
 
 ## 🔐 SCRAM-SHA-256
 
-### Client
+This local exchange shows both peers. In a networked application, send each
+message to the other peer before calling its next `step!`.
 
 ```julia
-client = SCRAMSHA256Client("alice", "correcthorsebatterystaple")
+using SASLAuth
 
-msg1, _ = step!(client, nothing)
-msg2, _ = step!(client, "r=nonceXYZ,s=\$(Base64.base64encode("salt")),i=4096")
-msg3, _ = step!(client, "v=\$(Base64.base64encode("serversignature"))"; verify_server_signature=false)
-```
-
-### Server
-
-```julia
+password = "correcthorsebatterystaple"
 salt = rand(UInt8, 16)
 iterations = 4096
-salted_password = pbkdf2(Vector{UInt8}("correcthorsebatterystaple"), salt, iterations)
+salted_password = SASLAuth.pbkdf2(Vector{UInt8}(password), salt, iterations)
+server = SASLAuth.SCRAMSHA256Server("alice", salted_password, salt, iterations)
+client = SASLAuth.SCRAMSHA256Client("alice", password)
 
-server = SCRAMSHA256Server("alice", salted_password, salt, iterations)
-
-challenge, _, _ = step!(server, msg1)
-response, done, success = step!(server, msg2)
+first_message, _ = SASLAuth.step!(client, nothing)
+challenge, _, _ = SASLAuth.step!(server, first_message)
+proof, _ = SASLAuth.step!(client, challenge)
+verifier, server_done, success = SASLAuth.step!(server, proof)
+_, client_done = SASLAuth.step!(client, verifier)
+@assert server_done && success && client_done
 ```
 
 ---

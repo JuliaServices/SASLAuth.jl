@@ -56,6 +56,10 @@ With the shared interface:
 
 ## 🔐 SCRAM-SHA-256
 
+Use one client instance per exchange and advance it through `SASLAuth.step!`.
+The client retains the expected server verifier for that exchange until it
+completes. Do not change its password or transcript fields between steps.
+
 ### Client
 
 ```julia

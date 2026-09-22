@@ -6,6 +6,7 @@ mutable struct SCRAMSHA256Client <: SASLClient
     client_first_message_bare::String
     server_first_message::Union{Nothing, String}
     auth_message::Union{Nothing, String}
+    expected_server_verifier::Union{Nothing, String}
 end
 
 function SCRAMSHA256Client(username, password::AbstractString)
@@ -14,6 +15,10 @@ function SCRAMSHA256Client(username, password::AbstractString)
     bare = "n=$username,r=$nonce"
     return SCRAMSHA256Client(username, password_bytes, nonce, :initial, bare, nothing, nothing)
 end
+
+# Seven-argument construction leaves the exchange verifier uncached.
+SCRAMSHA256Client(username, password, nonce, state, bare, server_first, auth_message) =
+    SCRAMSHA256Client(username, password, nonce, state, bare, server_first, auth_message, nothing)
 
 function step!(client::SCRAMSHA256Client, input::Union{Nothing, String}; verify_server_signature::Bool=true)
     # === STEP 1: Send the first message (client-first-message) ===
@@ -78,6 +83,10 @@ function step!(client::SCRAMSHA256Client, input::Union{Nothing, String}; verify_
         # Final message includes the auth fields and the proof
         msg = "$client_final_no_proof,p=$proof"
 
+        # Keep only the verifier for this transcript, not the derived password.
+        client.expected_server_verifier = base64encode(
+            hmac_sha256(hmac_sha256(salted, SCRAM_SERVER_KEY_STR), client.auth_message))
+
         # Update state to indicate the final message has been sent
         client.state = :final_sent
 
@@ -95,16 +104,15 @@ function step!(client::SCRAMSHA256Client, input::Union{Nothing, String}; verify_
                 throw(SASLAuthError("Missing server verifier in final SCRAM message: '$input'"))
             end
 
-            # Re-derive salted password from client state
-            salted = pbkdf2(client.password, base64decode(
-                parsekv(client.server_first_message)["s"]),
-                parse(Int, parsekv(client.server_first_message)["i"]),
-            )
-
-            # Compute expected server signature: HMAC(ServerKey, auth_message)
-            server_key = hmac_sha256(salted, SCRAM_SERVER_KEY_STR)
-            expected_signature = hmac_sha256(server_key, client.auth_message)
-            expected_b64 = base64encode(expected_signature)
+            expected_b64 = client.expected_server_verifier
+            if expected_b64 === nothing
+                # A restored client may not have a cached verifier.
+                salted = pbkdf2(client.password, base64decode(
+                    parsekv(client.server_first_message)["s"]),
+                    parse(Int, parsekv(client.server_first_message)["i"]))
+                server_key = hmac_sha256(salted, SCRAM_SERVER_KEY_STR)
+                expected_b64 = base64encode(hmac_sha256(server_key, client.auth_message))
+            end
 
             if expected_b64 != server_verifier
                 throw(SASLAuthError("Server signature verification failed. Expected: $expected_b64, got: $server_verifier"))
@@ -112,6 +120,7 @@ function step!(client::SCRAMSHA256Client, input::Union{Nothing, String}; verify_
         end
 
         # No further messages to send — just mark the protocol as done
+        client.expected_server_verifier = nothing
         client.state = :done
 
         # Return an empty string (no message to send) and signal that the exchange is complete

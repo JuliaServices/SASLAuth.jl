@@ -8,7 +8,13 @@ const SCRAM_SERVER_KEY_STR = "Server Key"
 
 secure_nonce(n=18) = replace(Base64.base64encode(rand(Random.RandomDevice(), UInt8, n)), "+" => "-", "/" => "_")
 
+"""
+    SASLAuth.pbkdf2(password::Vector{UInt8}, salt::Vector{UInt8}, iters::Int)
+
+Derive a 32-byte key with PBKDF2-HMAC-SHA-256. The iteration count must be positive.
+"""
 function pbkdf2(password::Vector{UInt8}, salt::Vector{UInt8}, iters::Int)
+    iters > 0 || throw(ArgumentError("PBKDF2 iteration count must be positive"))
     ctx = HMAC_CTX(SHA2_256_CTX(), password)
     update!(ctx, salt)
     update!(ctx, b"\x00\x00\x00\x01")

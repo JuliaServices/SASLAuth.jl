@@ -1,6 +1,7 @@
 using Test, Base64, SASLAuth
 
 include("scram_iterations.jl")
+include("scram_verifier_cache.jl")
 
 @testset "SCRAM SHA-256 Flow" begin
     client = SASLAuth.SCRAMSHA256Client("bob", "secr3t")

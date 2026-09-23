@@ -59,6 +59,10 @@ With the shared interface:
 This local exchange shows both peers. In a networked application, send each
 message to the other peer before calling its next `step!`.
 
+Use one client instance per exchange and advance it through `SASLAuth.step!`.
+The client retains the expected server verifier for that exchange until it
+completes. Do not change its password or transcript fields between steps.
+
 ```julia
 using SASLAuth
 

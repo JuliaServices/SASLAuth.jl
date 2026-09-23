@@ -17,6 +17,14 @@ function SCRAMSHA256Client(username, password::AbstractString)
     return SCRAMSHA256Client(username, password_bytes, nonce, :initial, bare, nothing, nothing)
 end
 
+# RFC 5802's posit-number is an ASCII decimal integer without a leading zero.
+function scram_iterations(value::AbstractString)
+    valid = !isempty(value) && '1' <= first(value) <= '9' && all(c -> '0' <= c <= '9', value)
+    count = valid ? tryparse(Int, value) : nothing
+    count === nothing && throw(SASLAuthError("Invalid SCRAM iteration count"))
+    return count
+end
+
 function step!(client::SCRAMSHA256Client, input::Union{Nothing, String}; verify_server_signature::Bool=true)
     # === STEP 1: Send the first message (client-first-message) ===
     if client.state == :initial
@@ -44,7 +52,7 @@ function step!(client::SCRAMSHA256Client, input::Union{Nothing, String}; verify_
         salt = base64decode(parts["s"])
 
         # Parse the iteration count as an integer
-        iters = parse(Int, parts["i"])
+        iters = scram_iterations(parts["i"])
 
         # Get the full combined nonce (client + server)
         combined_nonce = get(parts, "r", "")
@@ -104,7 +112,7 @@ function step!(client::SCRAMSHA256Client, input::Union{Nothing, String}; verify_
             # Re-derive salted password from client state
             salted = pbkdf2(client.password, base64decode(
                 parsekv(client.server_first_message)["s"]),
-                parse(Int, parsekv(client.server_first_message)["i"]),
+                scram_iterations(parsekv(client.server_first_message)["i"]),
             )
 
             # Compute expected server signature: HMAC(ServerKey, auth_message)
@@ -149,8 +157,10 @@ end
     SCRAMSHA256Server(username, salted_password, salt, iterations)
 
 Creates a new SCRAM-SHA-256 server instance to authenticate one user session.
+The iteration count must be positive.
 """
 function SCRAMSHA256Server(username, salted_password, salt, iterations)
+    iterations > 0 || throw(ArgumentError("SCRAM iteration count must be positive"))
     SCRAMSHA256Server(
         username,
         salted_password,
@@ -171,6 +181,7 @@ Processes the next client message and returns a 3-tuple:
 function step!(server::SCRAMSHA256Server, client_msg::String)
     # === STEP 1: Receive initial message from client ===
     if server.state == :initial
+        server.iterations > 0 || throw(ArgumentError("SCRAM iteration count must be positive"))
         # Expect a message like: "n,,n=alice,r=clientnonce"
         startswith(client_msg, "n,,") || throw(SASLAuthError("initial client message incorrectly formatted: '$client_msg'")) # Ensure correct protocol prefix
 

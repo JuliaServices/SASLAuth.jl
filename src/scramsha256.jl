@@ -8,6 +8,8 @@ mutable struct SCRAMSHA256Client <: SASLClient
     auth_message::Union{Nothing, String}
 end
 
+valid_scram_nonce(nonce::String) = !isempty(nonce) && all(c -> 0x21 <= c <= 0x7e && c != 0x2c, codeunits(nonce))
+
 function SCRAMSHA256Client(username, password::AbstractString)
     password_bytes = Vector{UInt8}(password)
     nonce = secure_nonce()
@@ -45,7 +47,11 @@ function step!(client::SCRAMSHA256Client, input::Union{Nothing, String}; verify_
         iters = parse(Int, parts["i"])
 
         # Get the full combined nonce (client + server)
-        combined_nonce = parts["r"]
+        combined_nonce = get(parts, "r", "")
+        if !valid_scram_nonce(combined_nonce) || !startswith(combined_nonce, client.client_nonce) ||
+                ncodeunits(combined_nonce) <= ncodeunits(client.client_nonce)
+            throw(SASLAuthError("Server nonce must extend the client nonce"))
+        end
 
         # === Derive the salted password via PBKDF2 using the salt and iteration count ===
         salted = pbkdf2(client.password, salt, iters)
@@ -173,12 +179,14 @@ function step!(server::SCRAMSHA256Server, client_msg::String)
         parts = parsekv(client_msg[4:end])
 
         # Extract and store the client-provided nonce
-        server.client_nonce = parts["r"]
+        nonce = get(parts, "r", "")
+        valid_scram_nonce(nonce) || throw(SASLAuthError("Invalid client nonce"))
+        server.client_nonce = nonce
 
         # Store the 'bare' part of the client's first message (excluding GS2 header "n,,")
         server.client_first_message_bare = client_msg[4:end]
 
-        # Generate a random server-side nonce (18 lower-case ASCII letters)
+        # Append an independently generated server nonce.
         server.server_nonce = secure_nonce()
 
         # Concatenate client and server nonces to form the "combined nonce"
@@ -206,6 +214,11 @@ function step!(server::SCRAMSHA256Server, client_msg::String)
 
         # Parse key=value fields from the final message
         parts = parsekv(client_msg)
+
+        if get(parts, "r", "") != server.combined_nonce
+            server.state = :failed
+            return "", true, false
+        end
 
         # Extract and decode the proof from base64
         proof = Base64.base64decode(parts["p"])

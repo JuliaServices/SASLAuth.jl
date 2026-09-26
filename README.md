@@ -63,6 +63,17 @@ Use one client instance per exchange and advance it through `SASLAuth.step!`.
 The client retains the expected server verifier for that exchange until it
 completes. Do not change its password or transcript fields between steps.
 
+The server authenticates the exact username supplied to its constructor.
+Usernames containing commas or equals signs are escaped on the wire and decoded
+before comparison. This implementation supports the `n,,` GS2 header, without
+channel binding or a separate authorization identity. SASLprep normalization is
+not implemented; callers remain responsible for any required normalization.
+
+Malformed SCRAM messages raise `SASLAuth.SASLAuthError`; an invalid client-final
+message instead completes the server exchange with `success == false`. The
+client option `verify_server_signature=false` allows an omitted server-final
+message, but still rejects an explicit server error or malformed message.
+
 ```julia
 using SASLAuth
 

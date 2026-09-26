@@ -46,7 +46,7 @@
         restored = SASLAuth.SCRAMSHA256Client("fixture", password, "client", :final_sent,
             "n=fixture,r=client", "r=clientserver,s=$(base64encode(salt)),i=$text", "fixture transcript")
         err = try
-            SASLAuth.step!(restored, "v=fixture")
+            SASLAuth.step!(restored, "v=$(base64encode("fixture"))")
         catch caught
             caught
         end

@@ -35,16 +35,6 @@ end
 
 Base.showerror(io::IO, e::SASLAuthError) = print(io, e.msg)
 
-# take a string like "a=b,c=d" and return a Dict("a" => "b", "c" => "d")
-function parsekv(s::String)
-    kv = Dict{String, String}()
-    for pair in split(s, ',')
-        k, v = split(pair, '=', limit=2)
-        kv[String(k)] = String(v)
-    end
-    return kv
-end
-
 abstract type SASLClient end
 abstract type SASLServer end
 

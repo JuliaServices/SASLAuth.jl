@@ -18,7 +18,7 @@ include("scram_verifier_cache.jl")
     @test !done2
 
     # Final step (server final message)
-    msg3, done3 = SASLAuth.step!(client, "v=abc123"; verify_server_signature=false)
+    msg3, done3 = SASLAuth.step!(client, "v=$(base64encode("unverified signature"))"; verify_server_signature=false)
     @test done3
 end
 
@@ -189,3 +189,4 @@ if !(Sys.iswindows() && Sys.WORD_SIZE == 32)
 end
 
 include("scram_nonces.jl")
+include("scram_messages.jl")

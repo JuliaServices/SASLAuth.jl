@@ -1,5 +1,7 @@
 using Test, Base64, SASLAuth
 
+include("pbkdf2.jl")
+
 include("scram_iterations.jl")
 include("scram_verifier_cache.jl")
 

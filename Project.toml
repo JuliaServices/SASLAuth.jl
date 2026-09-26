@@ -12,7 +12,7 @@ SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
 Base64 = "1.9"
 Libdl = "1.9"
 Random = "1.9"
-SHA = "0.7.0"
+SHA = "0.7.0, 1"
 julia = "1.9"
 
 [extras]

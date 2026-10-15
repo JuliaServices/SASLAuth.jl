@@ -54,6 +54,27 @@ end
     @test_throws SASLAuth.SASLAuthError SASLAuth.step!(client, "v=invalid_signature")
 end
 
+@testset "SCRAM signature errors omit the expected signature" begin
+    client = SASLAuth.SCRAMSHA256Client("bob", "secr3t")
+    SASLAuth.step!(client, nothing)
+    SASLAuth.step!(client, "r=$(client.client_nonce)xyz,s=$(Base64.base64encode("salt")),i=4096")
+    expected = client.expected_server_verifier
+    err = try
+        SASLAuth.step!(client, "v=$(base64encode("forged"))")
+        nothing
+    catch e
+        e
+    end
+    @test err isa SASLAuth.SASLAuthError
+    @test !occursin(expected, sprint(showerror, err))
+end
+
+@testset "secure_equal" begin
+    @test SASLAuth.secure_equal(UInt8[1, 2], UInt8[1, 2])
+    @test !SASLAuth.secure_equal(UInt8[1, 2], UInt8[1, 3])
+    @test !SASLAuth.secure_equal(UInt8[1, 2], UInt8[1, 2, 3])
+end
+
 @testset "SCRAM Server Detects Invalid Client Proof" begin
     username = "bob"
     password = "secret"

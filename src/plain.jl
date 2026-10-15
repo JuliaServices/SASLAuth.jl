@@ -59,7 +59,9 @@ function step!(server::PLAINServer, client_msg::String)
 
         server.state = :done
 
-        if expected_password !== nothing && password == expected_password
+        # compare digests: equal lengths, so neither content nor length leaks through timing
+        if expected_password isa AbstractString &&
+                secure_equal(SHA.sha256(password), SHA.sha256(expected_password))
             return "", true, true
         else
             return "", true, false

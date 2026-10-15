@@ -1,4 +1,3 @@
-# Define EXTERNAL SASL client
 mutable struct EXTERNALClient <: SASLClient
     authzid::String
     state::Symbol
@@ -30,7 +29,6 @@ function step!(client::EXTERNALClient, input::Union{Nothing, String})
     end
 end
 
-# Define EXTERNAL SASL server
 mutable struct EXTERNALServer <: SASLServer
     authorize::Function  # (authzid::String) -> Bool
     state::Symbol

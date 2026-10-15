@@ -80,80 +80,39 @@ SCRAMSHA256Client(username, password, nonce, state, bare, server_first, auth_mes
     SCRAMSHA256Client(username, password, nonce, state, bare, server_first, auth_message, nothing)
 
 function step!(client::SCRAMSHA256Client, input::Union{Nothing, String}; verify_server_signature::Bool=true)
-    # === STEP 1: Send the first message (client-first-message) ===
     if client.state == :initial
-        # Compose the initial message from the client.
-        # This message starts with "n,," (GS2 header indicating no channel binding)
-        # followed by the "bare" part, which includes the username and client nonce.
+        # client-first-message; the "n,," GS2 header means no channel binding
         msg = "n,," * client.client_first_message_bare
-
-        # Update the client state to indicate that the first message has been sent
         client.state = :first_sent
-
-        # Return the message to send, and indicate that the exchange is not yet done
         return msg, false
-
-    # === STEP 2: Receive server-first-message and generate proof ===
     elseif client.state == :first_sent
+        # server-first-message: compute the proof
         parts = scram_fields(input, ('r', 's', 'i'))
-
-        # Decode the server-provided salt from base64 to bytes
         salt = scram_base64(parts['s'])
-
-        # Parse the iteration count as an integer
         iters = scram_iterations(parts['i'])
-
-        # Get the full combined nonce (client + server)
         combined_nonce = parts['r']
         if !valid_scram_nonce(combined_nonce) || !startswith(combined_nonce, client.client_nonce) ||
                 ncodeunits(combined_nonce) <= ncodeunits(client.client_nonce)
             throw(SASLAuthError("Server nonce must extend the client nonce"))
         end
         client.server_first_message = input
-
-        # === Derive the salted password via PBKDF2 using the salt and iteration count ===
         salted = pbkdf2(client.password, salt, iters)
-
-        # Derive the client key by HMAC(salted_password, SCRAM_CLIENT_KEY_STR)
         client_key = hmac_sha256(salted, SCRAM_CLIENT_KEY_STR)
-
-        # Hash the client key to get the "stored key"
         stored_key = SHA.sha256(client_key)
-
-        # === Construct the final message to send (client-final-message) ===
-
-        # The part before the proof includes:
-        # - "c=biws" — base64-encoded GS2 header (indicates no channel binding)
-        # - "r=..." — full combined nonce
+        # "biws" is base64("n,,"), the GS2 header sent in client-first-message
         client_final_no_proof = "c=biws,r=$combined_nonce"
-
-        # Construct the auth message from:
-        # - client-first-message-bare
-        # - server-first-message
-        # - client-final-message without proof
         client.auth_message = client.client_first_message_bare * "," * input * "," * client_final_no_proof
-
-        # Sign the auth message with the stored key to get the client signature
         signature = hmac_sha256(stored_key, client.auth_message)
-
-        # Compute the proof as XOR(client_key, client_signature), then encode to base64
         proof = base64encode(xor.(client_key, signature))
-
-        # Final message includes the auth fields and the proof
         msg = "$client_final_no_proof,p=$proof"
 
         # Keep only the verifier for this transcript, not the derived password.
         client.expected_server_verifier = base64encode(
             hmac_sha256(hmac_sha256(salted, SCRAM_SERVER_KEY_STR), client.auth_message))
-
-        # Update state to indicate the final message has been sent
         client.state = :final_sent
-
-        # Return the message to send, and indicate we're still waiting for final server response
         return msg, false
-
-    # === STEP 3: Receive final server response (e.g. verification message) ===
     elseif client.state == :final_sent
+        # server-final-message: check the server signature
         # Skipping signature verification permits an omitted final message,
         # but an explicit server error or malformed message must still fail.
         parts = if input !== nothing || verify_server_signature
@@ -180,16 +139,10 @@ function step!(client::SCRAMSHA256Client, input::Union{Nothing, String}; verify_
             end
         end
 
-        # No further messages to send — just mark the protocol as done
         client.expected_server_verifier = nothing
         client.state = :done
-
-        # Return an empty string (no message to send) and signal that the exchange is complete
         return "", true
-
-    # === Catch invalid states ===
     else
-        # If we’re in a state that shouldn’t be reached, raise an error
         throw(SASLAuthError("Invalid SCRAM state: $(client.state)"))
     end
 end
@@ -236,47 +189,24 @@ Processes the next client message and returns a 3-tuple:
 - `success::Bool`: Whether authentication succeeded (if `done == true`)
 """
 function step!(server::SCRAMSHA256Server, client_msg::String)
-    # === STEP 1: Receive initial message from client ===
     if server.state == :initial
+        # client-first-message, e.g. "n,,n=alice,r=clientnonce"
         server.iterations > 0 || throw(ArgumentError("SCRAM iteration count must be positive"))
-        # Expect a message like: "n,,n=alice,r=clientnonce"
-        startswith(client_msg, "n,,") || throw(SASLAuthError("initial client message incorrectly formatted: '$client_msg'")) # Ensure correct protocol prefix
-
+        startswith(client_msg, "n,,") || throw(SASLAuthError("initial client message incorrectly formatted: '$client_msg'"))
         parts = scram_fields(client_msg[4:end], ('n', 'r'))
         scram_username(parts['n']) == server.username || throw(SASLAuthError("Unexpected SCRAM username"))
-
-        # Extract and store the client-provided nonce
         nonce = parts['r']
         valid_scram_nonce(nonce) || throw(SASLAuthError("Invalid client nonce"))
         server.client_nonce = nonce
-
-        # Store the 'bare' part of the client's first message (excluding GS2 header "n,,")
         server.client_first_message_bare = client_msg[4:end]
-
-        # Append an independently generated server nonce.
         server.server_nonce = secure_nonce()
-
-        # Concatenate client and server nonces to form the "combined nonce"
         server.combined_nonce = server.client_nonce * server.server_nonce
-
-        # Construct the server's first message ("challenge") including:
-        # - r: combined nonce
-        # - s: salt (base64-encoded)
-        # - i: iteration count
         challenge = "r=$(server.combined_nonce),s=$(Base64.base64encode(server.salt)),i=$(server.iterations)"
-
-        # Store the server's first message for later use in the auth message
         server.server_first_message = challenge
-
-        # Update internal state
         server.state = :challenge_sent
-
-        # Return the challenge, and signal that the exchange is not done yet
         return challenge, false, false
-
-    # === STEP 2: Receive final message from client and verify ===
     elseif server.state == :challenge_sent
-        # Store the full final message from the client (e.g. "c=biws,r=...,p=...")
+        # client-final-message, e.g. "c=biws,r=...,p=..."
         server.client_final_message = client_msg
 
         # Any invalid final message ends this server exchange unsuccessfully.
@@ -297,23 +227,10 @@ function step!(server::SCRAMSHA256Server, client_msg::String)
         # Keep every preceding byte, including optional extensions, unchanged.
         client_final_wo_proof = split(client_msg, ",p=", limit=2)[1]
 
-        # Construct the "auth message" from the three exchanged messages:
-        # - client-first-bare
-        # - server-first
-        # - client-final-without-proof
         server.auth_message = server.client_first_message_bare * "," * server.server_first_message * "," * client_final_wo_proof
-
-        # Derive the client's key:
-        # First, HMAC(salted_password, SCRAM_CLIENT_KEY_STR) gives the client key
         client_key = hmac_sha256(server.salted_password, SCRAM_CLIENT_KEY_STR)
-
-        # Hash the client key to produce the "stored key"
         stored_key = SHA.sha256(client_key)
-
-        # Sign the auth message with the stored key (this is what the client would have done)
         client_signature = hmac_sha256(stored_key, server.auth_message)
-
-        # Compute what the proof *should* be by XORing client key and the client signature
         expected_proof = xor.(client_key, client_signature)
 
         # If the expected proof matches what the client sent, authentication succeeded
@@ -324,20 +241,12 @@ function step!(server::SCRAMSHA256Server, client_msg::String)
             server_signature = base64encode(
                 hmac_sha256(hmac_sha256(server.salted_password, SCRAM_SERVER_KEY_STR), server.auth_message)
             )
-
-            # Update state to done
             server.state = :done
-
-            # Send final message to client and indicate success
             return "v=$server_signature", true, true
         else
-            # Return empty string, mark as done, but signal failure
             return "", true, false
         end
-
-    # === Invalid state guard ===
     else
-        # If this function is called in a state where it shouldn't be, raise an error
         throw(SASLAuthError("Invalid SCRAM server state: $(server.state)"))
     end
 end

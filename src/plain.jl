@@ -1,4 +1,3 @@
-# Define the PLAIN SASL client
 mutable struct PLAINClient <: SASLClient
     username::String
     password::String
@@ -17,8 +16,7 @@ Returns `(msg::String, done::Bool)`.
 """
 function step!(client::PLAINClient, input::Union{Nothing, String})
     if client.state == :initial
-        # PLAIN format: authzid \0 authcid \0 password
-        # We'll leave authzid blank ("")
+        # authzid \0 authcid \0 password, with an empty authzid
         msg = string('\0', client.username, '\0', client.password)
         client.state = :done
         return msg, true
@@ -29,7 +27,6 @@ function step!(client::PLAINClient, input::Union{Nothing, String})
     end
 end
 
-# Define the PLAIN SASL server
 mutable struct PLAINServer <: SASLServer
     password_lookup::Function
     state::Symbol
@@ -53,7 +50,6 @@ Returns `(response::String, done::Bool, success::Bool)`.
 """
 function step!(server::PLAINServer, client_msg::String)
     if server.state == :initial
-        # Split the message into its 3 components
         parts = split(client_msg, '\0')
         length(parts) != 3 && throw(SASLAuthError("Malformed PLAIN message"))
 

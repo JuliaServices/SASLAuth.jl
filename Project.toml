@@ -1,6 +1,6 @@
 name = "SASLAuth"
 uuid = "cca00f77-35de-46b7-a2e1-4a86bed9cc56"
-version = "1.1.0"
+version = "1.1.1"
 
 [deps]
 Base64 = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"

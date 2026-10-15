@@ -176,7 +176,7 @@ function step!(client::SCRAMSHA256Client, input::Union{Nothing, String}; verify_
             end
 
             if expected_b64 != server_verifier
-                throw(SASLAuthError("Server signature verification failed. Expected: $expected_b64, got: $server_verifier"))
+                throw(SASLAuthError("Server signature verification failed"))
             end
         end
 
@@ -317,7 +317,7 @@ function step!(server::SCRAMSHA256Server, client_msg::String)
         expected_proof = xor.(client_key, client_signature)
 
         # If the expected proof matches what the client sent, authentication succeeded
-        if expected_proof == proof
+        if secure_equal(expected_proof, proof)
             # Generate a final verification message for the client
             # HMAC(salted_password, SCRAM_SERVER_KEY_STR) is the server key
             # Then sign the auth message and base64-encode it

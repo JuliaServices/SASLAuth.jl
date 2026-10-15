@@ -57,6 +57,17 @@ function _pbkdf2_hash!(ctx::SHA2_256_CTX, state::Vector{UInt32}, digest::Vector{
     return digest
 end
 
+# Equal-length inputs take the same time whatever their contents, so a caller
+# cannot learn how many leading bytes matched.
+function secure_equal(a::AbstractVector{UInt8}, b::AbstractVector{UInt8})
+    length(a) == length(b) || return false
+    diff = 0x00
+    for i in eachindex(a, b)
+        diff |= a[i] ⊻ b[i]
+    end
+    return diff == 0x00
+end
+
 struct SASLAuthError <: Exception
     msg::String
 end
